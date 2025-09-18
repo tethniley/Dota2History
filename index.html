@@ -198,6 +198,7 @@
   let heroById = {};
   let heroImgById = {};
   let isLoading = false;
+  let reachedEnd = false;
 
   // Elements
   const $matches = document.getElementById("matches");
@@ -208,18 +209,16 @@
   const $resultFilter = document.getElementById("result-filter");
   const $container = document.getElementById("match-container");
 
-  // Utilities
-  function fmtMins(seconds) { return `${Math.round(seconds / 60)} min`; }
-  function toDateStr(start_time) {
-    const d = new Date(start_time * 1000);
-    return d.toLocaleString([], { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute:'2-digit' });
-  }
-  function isWin(match) {
-    const youRadiant = match.player_slot < 128;
-    const radiantWin = match.radiant_win;
-    return (youRadiant && radiantWin) || (!youRadiant && !radiantWin);
-  }
-  function sideLabel(slot) { return slot < 128 ? "Radiant" : "Dire"; }
+  // Utils
+  const fmtMins = s => `${Math.round(s / 60)} min`;
+  const toDateStr = t => new Date(t * 1000).toLocaleString([], {
+    year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'
+  });
+  const isWin = m => {
+    const youRadiant = m.player_slot < 128;
+    return (youRadiant && m.radiant_win) || (!youRadiant && !m.radiant_win);
+  };
+  const sideLabel = slot => (slot < 128 ? "Radiant" : "Dire");
 
   // Skeletons
   function showSkeletons(count = 5) {
@@ -240,43 +239,46 @@
     [...$matches.querySelectorAll(".skeleton")].forEach(n => n.remove());
   }
 
+  // Build the server-side query based on filters
+  function currentQueryParams() {
+    const params = new URLSearchParams();
+    params.set("limit", String(limit));
+    params.set("offset", String(offset));
+
+    const heroVal = $heroFilter.value;
+    if (heroVal) params.set("hero_id", heroVal);
+
+    const resultVal = $resultFilter.value;  // '', 'win', 'loss'
+    if (resultVal === "win") params.set("win", "1");
+    if (resultVal === "loss") params.set("win", "0");
+
+    return params.toString();
+  }
+
   // Fetchers
   async function fetchHeroesOnce() {
     if (heroes.length) return heroes;
     heroes = await fetch("https://api.opendota.com/api/heroes").then(r => r.json());
     heroById = Object.fromEntries(heroes.map(h => [h.id, h.localized_name]));
     heroImgById = Object.fromEntries(heroes.map(h => [h.id, h.name.replace("npc_dota_hero_", "")]));
-
-    // Populate hero filter
+    // Populate hero dropdown
     const opts = heroes
       .sort((a,b) => a.localized_name.localeCompare(b.localized_name))
       .map(h => `<option value="${h.id}">${h.localized_name}</option>`).join("");
-    $heroFilter.insertAdjacentHTML("beforeend", opts);
+    document.getElementById("hero-filter").insertAdjacentHTML("beforeend", opts);
     return heroes;
   }
 
-  async function fetchMatchesChunk(off) {
-    const url = `https://api.opendota.com/api/players/${accountId}/matches?limit=${limit}&offset=${off}`;
+  async function fetchMatchesChunk() {
+    const qs = currentQueryParams();
+    const url = `https://api.opendota.com/api/players/${accountId}/matches?${qs}`;
     const r = await fetch(url);
     return r.json();
   }
 
-  // Rendering
+  // Rendering (no client-side filtering anymore — server returns filtered rows)
   function render() {
-    // Apply filters to allMatches
-    const heroFilterVal = $heroFilter.value;
-    const resultFilterVal = $resultFilter.value; // '', 'win', 'loss'
-
-    const filtered = allMatches.filter(m => {
-      const passHero = heroFilterVal ? String(m.hero_id) === heroFilterVal : true;
-      const passResult = resultFilterVal
-        ? (resultFilterVal === 'win' ? isWin(m) : !isWin(m))
-        : true;
-      return passHero && passResult;
-    });
-
-    // Rebuild list
-    $matches.innerHTML = filtered.map(m => {
+    $matches.innerHTML = allMatches.map(m => {
       const win = isWin(m);
       return `
         <li>
@@ -297,56 +299,64 @@
       `;
     }).join("");
 
-    // Update counters
+    // Counters
     $loadedCount.textContent = allMatches.length;
     $pageNum.textContent = page;
 
-    // Keep the nice fade hint visible when scrolled to bottom
-    // (optional tweak, no code needed because overlay is fixed)
+    // Button state when end reached
+    if (reachedEnd) {
+      $loadMore.textContent = "No more matches";
+      $loadMore.setAttribute("disabled", "true");
+    } else {
+      $loadMore.textContent = "Load More";
+      $loadMore.removeAttribute("disabled");
+    }
   }
 
-  // Load more flow
+  // Load More flow (server-side filtered)
   async function loadMatches() {
-    if (isLoading) return;
+    if (isLoading || reachedEnd) return;
     isLoading = true;
     $loadMore.setAttribute("disabled", "true");
-    const prevScrollHeight = $container.scrollHeight;
-
-    // show skeletons
     showSkeletons(5);
 
     try {
       await fetchHeroesOnce();
-      const chunk = await fetchMatchesChunk(offset);
+      const chunk = await fetchMatchesChunk();
+      // If first page, clear list placeholder
+      if (offset === 0) $matches.innerHTML = "";
+
       allMatches = allMatches.concat(chunk);
       offset += limit;
       page = 1 + Math.floor(offset / limit);
+      if (!chunk.length || chunk.length < limit) reachedEnd = true;
     } catch (e) {
-      console.error("Failed to fetch:", e);
+      console.error("Fetch error:", e);
     } finally {
-      // remove skeletons, render, re-enable
       clearSkeletons();
       render();
-      $loadMore.removeAttribute("disabled");
-
-      // Optional: keep scroll position anchored near previously loaded content
-      if ($container.scrollTop < 40) {
-        $container.scrollTop = prevScrollHeight - $container.clientHeight - 20;
-      }
       isLoading = false;
     }
   }
 
-  // Filters → re-render only (no fetch)
-  $heroFilter.addEventListener("change", render);
-  $resultFilter.addEventListener("change", render);
+  // Reset & refetch when filters change
+  function resetAndReload() {
+    offset = 0;
+    page = 1;
+    reachedEnd = false;
+    allMatches = [];
+    $matches.innerHTML = "";
+    render();
+    loadMatches();
+  }
 
-  // Button
-  $loadMore.addEventListener("click", loadMatches);
+  document.getElementById("hero-filter").addEventListener("change", resetAndReload);
+  document.getElementById("result-filter").addEventListener("change", resetAndReload);
+  document.getElementById("load-more").addEventListener("click", loadMatches);
 
-  // Initial boot
+  // Boot
   (async function init() {
-    // First page
+    await fetchHeroesOnce();
     await loadMatches();
   })();
 </script>
