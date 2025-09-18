@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>My Dota Match History</title>
+  <style>
+    :root {
+      --bg: #1b2838;
+      --card: #2a475e;
+      --card-hover: #3b6b8e;
+      --accent: #66c0f4;
+      --text: #ffffff;
+      --win: #2ecc71;
+      --loss: #e74c3c;
+      --muted: #e6e6e6;
+    }
+    * { box-sizing: border-box; }
+    body {
+      font-family: "Segoe UI", Tahoma, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      margin: 0;
+      padding: 20px;
+    }
+    h2 {
+      text-align: center;
+      margin-bottom: 20px;
+      font-size: 28px;
+      color: var(--accent);
+    }
+    #match-container {
+      max-width: 900px;
+      margin: auto;
+      height: 520px;                /* scrollable viewport */
+      overflow-y: auto;
+      position: relative;
+      padding-bottom: 80px;         /* space for fade overlay */
+      border-radius: 10px;
+    }
+    ul { list-style: none; padding: 0; margin: 0; }
+    li {
+      background: var(--card);
+      margin: 10px 0;
+      padding: 12px;
+      border-radius: 10px;
+      display: grid;
+      grid-template-columns: 72px 1fr auto;
+      align-items: center;
+      gap: 12px;
+      transition: transform 0.2s ease, background 0.2s ease;
+    }
+    li:hover { transform: translateY(-2px); background: var(--card-hover); }
+    img { border-radius: 8px; width: 60px; height: 34px; object-fit: cover; }
+    a { color: var(--accent); font-weight: 600; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    .match-info { display: flex; flex-direction: column; gap: 2px; }
+    .meta { font-size: 12px; color: var(--muted); }
+    .kda { font-size: 14px; color: #f4f4f4; }
+    .badge {
+      padding: 6px 10px;
+      border-radius: 999px;
+      font-weight: 700;
+      font-size: 12px;
+      letter-spacing: 0.4px;
+      text-transform: uppercase;
+      text-align: center;
+      min-width: 84px;
+    }
+    .badge.win { background: rgba(46, 204, 113, 0.15); color: var(--win); border: 1px solid rgba(46,204,113,0.4); }
+    .badge.loss { background: rgba(231, 76, 60, 0.15); color: var(--loss); border: 1px solid rgba(231,76,60,0.4); }
+    .side { font-size: 11px; opacity: 0.85; text-align: center; margin-top: 4px; }
+
+    /* Fading overlay to hint more content */
+    #fade-overlay {
+      position: absolute; bottom: 0; left: 0; right: 0; height: 90px;
+      background: linear-gradient(to top, rgba(27,40,56,0.98) 30%, rgba(27,40,56,0) 100%);
+      pointer-events: none;
+    }
+
+    /* Load More button */
+    #load-more {
+      display: block;
+      margin: 16px auto;
+      padding: 10px 20px;
+      background: rgba(102,192,244,0.9);
+      color: var(--bg);
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      font-weight: 800;
+      transition: background 0.2s ease, transform 0.1s ease;
+    }
+    #load-more:hover { background: rgba(102,192,244,1); }
+    #load-more:active { transform: translateY(1px); }
+  </style>
+</head>
+<body>
+  <h2>Dota Match History</h2>
+
+  <div id="match-container">
+    <ul id="matches">Loading...</ul>
+    <div id="fade-overlay"></div>
+  </div>
+
+  <button id="load-more">Load More</button>
+
+  <script>
+    const accountId = 254022844;
+    let offset = 0;
+    const limit = 10;
+
+    function fmtMins(seconds) {
+      return `${Math.round(seconds / 60)} min`;
+    }
+    function toDateStr(start_time) {
+      const d = new Date(start_time * 1000);
+      return d.toLocaleString([], { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute:'2-digit' });
+    }
+    function isWin(match) {
+      // OpenDota: radiant_win is boolean; player_slot < 128 => you were Radiant
+      const youRadiant = match.player_slot < 128;
+      const radiantWin = match.radiant_win;
+      return (youRadiant && radiantWin) || (!youRadiant && !radiantWin);
+    }
+    function sideLabel(slot) {
+      return slot < 128 ? "Radiant" : "Dire";
+    }
+
+    async function fetchChunk(off) {
+      const [matches, heroes] = await Promise.all([
+        fetch(`https://api.opendota.com/api/players/${accountId}/matches?limit=${limit}&offset=${off}`).then(r => r.json()),
+        fetch("https://api.opendota.com/api/heroes").then(r => r.json())
+      ]);
+      return { matches, heroes };
+    }
+
+    async function loadMatches() {
+      try {
+        const { matches, heroes } = await fetchChunk(offset);
+        const heroById = Object.fromEntries(heroes.map(h => [h.id, h.localized_name]));
+        const heroImgById = Object.fromEntries(heroes.map(h => [h.id, h.name.replace("npc_dota_hero_", "")]));
+
+        if (offset === 0) document.getElementById("matches").innerHTML = "";
+
+        const html = matches.map(m => {
+          const win = isWin(m);
+          return `
+            <li>
+              <img src="https://cdn.cloudflare.steamstatic.com/apps/dota2/images/dota_react/heroes/${heroImgById[m.hero_id]}.png"
+                   alt="${heroById[m.hero_id] || 'Hero'}" />
+              <div class="match-info">
+                <a href="https://www.opendota.com/matches/${m.match_id}" target="_blank">Match ${m.match_id}</a>
+                <div class="meta">
+                  ${heroById[m.hero_id] || "Unknown Hero"} • ${fmtMins(m.duration)} • ${toDateStr(m.start_time)}
+                </div>
+                <div class="kda">K/D/A: ${m.kills}/${m.deaths}/${m.assists}</div>
+              </div>
+              <div>
+                <div class="badge ${win ? 'win' : 'loss'}">${win ? 'Win' : 'Loss'}</div>
+                <div class="side">${sideLabel(m.player_slot)}</div>
+              </div>
+            </li>
+          `;
+        }).join("");
+
+        document.getElementById("matches").insertAdjacentHTML("beforeend", html);
+        offset += limit;
+      } catch (err) {
+        console.error("Failed to load matches:", err);
+        document.getElementById("matches").textContent = "Error loading matches.";
+      }
+    }
+
+    document.getElementById("load-more").addEventListener("click", loadMatches);
+    loadMatches(); // initial
+  </script>
+</body>
+</html>
